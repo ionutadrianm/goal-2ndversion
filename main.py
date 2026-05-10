@@ -10,7 +10,6 @@ import logging
 from logging.handlers import RotatingFileHandler
 import csv
 
-# MOdificat
 # =========================
 # LOGGING
 # =========================
