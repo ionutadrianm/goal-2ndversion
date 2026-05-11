@@ -317,14 +317,26 @@ def check_finished_matches():
 
             initial_total = sum(map(int, data["initial_score"].split("-")))
             final_total = (goals["home"] or 0) + (goals["away"] or 0)
-            result = "✅ WIN" if final_total >= initial_total + 1 else "❌ LOSS"
+            goals_since_signal = final_total - initial_total
+            if goals_since_signal >= 2:
+                result = "✅ WIN"
+            elif goals_since_signal == 1:
+                result = "🔄 DRAW (PUSH)"
+            else:
+                result = "❌ LOSS"
 
             result_data = data.copy()
             result_data["result"] = result
             save_result_to_csv(result_data)
             
             # --- NEW: SEND INDIVIDUAL RESULT TO TELEGRAM ---
-            send_telegram(f"📊 RESULT: {data['teams']}\nOutcome: {result}\nFinal Score: {goals['home']}-{goals['away']}")
+            send_telegram(
+                f"📊 RESULT: {data['teams']}\n"
+                f"Outcome: {result}\n"
+                f"Score at Signal: {data['initial_score']}\n"
+                f"Final Score: {goals['home']}-{goals['away']}\n"
+                f"Goals after Signal: {goals_since_signal}"
+            )
             
             logging.info(f"📊 RESULT → {data['teams']} | {result}")
             del seen_matches[match_id]
@@ -340,6 +352,8 @@ def generate_performance_report():
         if not os.path.exists(RESULTS_CSV): return
         
         wins = 0
+        draws = 0
+        losses = 0
         total = 0
         with open(RESULTS_CSV, "r") as f:
             reader = csv.DictReader(f)
@@ -347,16 +361,26 @@ def generate_performance_report():
                 total += 1
                 if "WIN" in row["result"]:
                     wins += 1
+                elif "DRAW" in row["result"]:
+                    draws += 1
+                else:
+                    losses += 1
         
         if total > 0:
             winrate = round((wins / total) * 100, 2)
+            # Winrate usually excludes draws or treats them as neutral
+            # This calculates winrate based on completed (non-refunded) bets
+            active_bets = total - draws
+            clean_winrate = round((wins / active_bets) * 100, 2) if active_bets > 0 else 0
+
             report_msg = (
-                f"📊 PERFORMANCE REPORT\n"
+                f"📊 PERFORMANCE REPORT (Asian Line)\n"
                 f"━━━━━━━━━━━━━━━\n"
                 f"Total Signals: {total}\n"
-                f"Wins: {wins}\n"
-                f"Losses: {total - wins}\n"
-                f"Winrate: {winrate}%"
+                f"✅ Wins: {wins}\n"
+                f"🔄 Draws/Push: {draws}\n"
+                f"❌ Losses: {losses}\n"
+                f"📈 Adj. Winrate: {clean_winrate}%"
             )
             send_telegram(report_msg)
             logging.info(f"Sent Performance Report: {winrate}%")
@@ -455,7 +479,7 @@ def run():
                         value = calculate_value(book_odds, fair_odds) if book_odds else None
 
                         if value and value >= 2:
-                            send_telegram(f"{tier} SIGNAL\n{home} vs {away}\nMin: {minute}\nScore: {h_goals}-{a_goals}\nMarket: O{total+1.5}\nBook: {book_odds}\nFair: {fair_odds}\nValue: {value}%\nTags: {', '.join(tags)}")
+                            send_telegram(f"{tier} SIGNAL\n{home} vs {away}\nMin: {minute}\nScore: {h_goals}-{a_goals}\nMarket: Asian Over 1.0 (Post-Signal)\nBook: {book_odds}\nFair: {fair_odds}\nValue: {value}%\nTags: {', '.join(tags)}")
                             
                             seen_matches[match_id] = {
                                 "time": datetime.now(), "teams": f"{home} vs {away}", "initial_score": f"{h_goals}-{a_goals}",
