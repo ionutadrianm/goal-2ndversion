@@ -303,26 +303,65 @@ def check_finished_matches():
     logging.info("📊 Checking results...")
     for match_id, data in list(seen_matches.items()):
         try:
+            # Only check if signal was more than 40 mins ago
             if (datetime.now() - data["time"]).total_seconds() < 2400: continue
+            
             r = requests.get(f"{BASE_URL}/fixtures?id={match_id}", headers=HEADERS)
             res = r.json().get("response", [])
             if not res: continue
+            
             fixture = res[0]["fixture"]
             goals = res[0]["goals"]
+            
             if fixture["status"]["short"] not in ["FT", "AET", "PEN"]: continue
 
             initial_total = sum(map(int, data["initial_score"].split("-")))
             final_total = (goals["home"] or 0) + (goals["away"] or 0)
-            result = "✅ WIN" if final_total >= initial_total + 1 else "❌ LOSS" # Using +1 based on Over +0.5 logic usually
+            result = "✅ WIN" if final_total >= initial_total + 1 else "❌ LOSS"
 
             result_data = data.copy()
             result_data["result"] = result
             save_result_to_csv(result_data)
+            
+            # --- NEW: SEND INDIVIDUAL RESULT TO TELEGRAM ---
+            send_telegram(f"📊 RESULT: {data['teams']}\nOutcome: {result}\nFinal Score: {goals['home']}-{goals['away']}")
+            
             logging.info(f"📊 RESULT → {data['teams']} | {result}")
             del seen_matches[match_id]
             save_signals()
         except Exception as e:
             logging.error(f"Result error: {e}")
+
+    # --- NEW: GENERATE & SEND OVERALL PERFORMANCE REPORT ---
+    generate_performance_report()
+
+def generate_performance_report():
+    try:
+        if not os.path.exists(RESULTS_CSV): return
+        
+        wins = 0
+        total = 0
+        with open(RESULTS_CSV, "r") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                total += 1
+                if "WIN" in row["result"]:
+                    wins += 1
+        
+        if total > 0:
+            winrate = round((wins / total) * 100, 2)
+            report_msg = (
+                f"📊 PERFORMANCE REPORT\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"Total Signals: {total}\n"
+                f"Wins: {wins}\n"
+                f"Losses: {total - wins}\n"
+                f"Winrate: {winrate}%"
+            )
+            send_telegram(report_msg)
+            logging.info(f"Sent Performance Report: {winrate}%")
+    except Exception as e:
+        logging.error(f"Error generating report: {e}")
 
 # =========================
 # MAIN LOOP
