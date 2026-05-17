@@ -306,14 +306,27 @@ def check_finished_matches():
     logging.info("📊 Checking results...")
     for match_id, data in list(seen_matches.items()):
         try:
-            if (datetime.now() - data["time"]).total_seconds() < 2400: continue
+            # --- FIX: Convert string back to datetime object safely ---
+            match_time = data["time"]
+            if isinstance(match_time, str):
+                try:
+                    # Tries standard ISO string conversion
+                    match_time = datetime.fromisoformat(match_time)
+                except ValueError:
+                    # Fallback for custom string formats if needed
+                    match_time = datetime.strptime(match_time, "%Y-%m-%d %H:%M:%S.%f")
+
+            # Safe subtraction using the converted object
+            if (datetime.now() - match_time).total_seconds() < 2400: 
+                continue
+            # ----------------------------------------------------------
             
             r = requests.get(f"{BASE_URL}/fixtures?id={match_id}", headers=HEADERS)
             res = r.json().get("response", [])
             if not res or not res[0]: continue
             
             fixture = res[0].get("fixture")
-            goals = res[0].get("goals") or {} # Fallback to avoid NoneType subscription error
+            goals = res[0].get("goals") or {}
             
             if not fixture or fixture.get("status", {}).get("short") not in ["FT", "AET", "PEN"]: continue
 
