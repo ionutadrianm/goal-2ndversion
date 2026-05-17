@@ -306,21 +306,24 @@ def check_finished_matches():
     logging.info("📊 Checking results...")
     for match_id, data in list(seen_matches.items()):
         try:
-            # Only check if signal was more than 40 mins ago
             if (datetime.now() - data["time"]).total_seconds() < 2400: continue
             
             r = requests.get(f"{BASE_URL}/fixtures?id={match_id}", headers=HEADERS)
             res = r.json().get("response", [])
-            if not res: continue
+            if not res or not res[0]: continue
             
-            fixture = res[0]["fixture"]
-            goals = res[0]["goals"]
+            fixture = res[0].get("fixture")
+            goals = res[0].get("goals") or {} # Fallback to avoid NoneType subscription error
             
-            if fixture["status"]["short"] not in ["FT", "AET", "PEN"]: continue
+            if not fixture or fixture.get("status", {}).get("short") not in ["FT", "AET", "PEN"]: continue
+
+            h_final = goals.get("home") if goals.get("home") is not None else 0
+            a_final = goals.get("away") if goals.get("away") is not None else 0
 
             initial_total = sum(map(int, data["initial_score"].split("-")))
-            final_total = (goals["home"] or 0) + (goals["away"] or 0)
+            final_total = h_final + a_final
             goals_since_signal = final_total - initial_total
+            
             if goals_since_signal >= 2:
                 result = "✅ WIN"
             elif goals_since_signal == 1:
@@ -336,7 +339,7 @@ def check_finished_matches():
                 f"📊 RESULT: {data['teams']}\n"
                 f"Outcome: {result}\n"
                 f"Score at Signal: {data['initial_score']}\n"
-                f"Final Score: {goals['home']}-{goals['away']}\n"
+                f"Final Score: {h_final}-{a_final}\n"
                 f"Goals after Signal: {goals_since_signal}"
             )
             
@@ -344,9 +347,8 @@ def check_finished_matches():
             del seen_matches[match_id]
             save_signals()
         except Exception as e:
-            logging.error(f"Individual result process error for match {match_id}: {e}")
+            logging.error(f"Result error for match {match_id}: {e}")
 
-    # Moved outside the main match loop's try block to ensure it always fires
     generate_performance_report()
 
 def generate_performance_report():
@@ -402,12 +404,22 @@ def run():
 
             for m in matches[:80]:
                 try:
-                    fixture, teams, goals = m["fixture"], m["teams"], m["goals"]
+                    # Defensive Check: ensure necessary parent keys exist and are not None
+                    if not m or not m.get("fixture") or not m.get("teams"):
+                        continue
+                        
+                    fixture, teams = m["fixture"], m["teams"]
+                    goals = m.get("goals") or {}  # Fallback to empty dict if None
+                    
                     match_id, minute = str(fixture["id"]), fixture["status"]["elapsed"]
                     if not minute or minute < 30 or minute > 70: continue
 
                     home, away = teams["home"]["name"], teams["away"]["name"]
-                    h_goals, a_goals = goals["home"] or 0, goals["away"] or 0
+                    
+                    # Safe extraction even if goals is None or values are missing
+                    h_goals = goals.get("home") if goals.get("home") is not None else 0
+                    a_goals = goals.get("away") if goals.get("away") is not None else 0
+                    
                     total = h_goals + a_goals
                     if total >= 3: continue
 
