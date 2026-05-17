@@ -66,7 +66,6 @@ def load_signals():
                 cleaned_data = {}
                 for k, v in data.items():
                     try:
-                        # Ensure time is parsed back into a real datetime object
                         if isinstance(v.get("time"), str):
                             v["time"] = datetime.fromisoformat(v["time"])
                         cleaned_data[str(k)] = v
@@ -251,24 +250,31 @@ def calculate_value(book_odds, fair_odds):
 def save_result_to_csv(data):
     try:
         file_exists = os.path.isfile(RESULTS_CSV)
+        
+        headers = [
+            "match", "result", "signal_tier", "signal_tags", "model_score",
+            "book_odds", "fair_odds", "model_prob", "value",
+            "home_win_odds", "draw_odds", "away_win_odds",
+            "pre_o15", "pre_o25", "pre_o35",
+            "track_minute", "signal_minute", "total_shots", "total_sot", "total_corners",
+            "home_shots", "away_shots", "home_sot", "away_sot", "home_corners", "away_corners",
+            "home_accuracy", "away_accuracy", "delta_shots", "goals_at_signal"
+        ]
+        
         with open(RESULTS_CSV, "a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=[
-                "match", "result", "signal_tier", "signal_tags", "model_score",
-                "book_odds", "fair_odds", "model_prob", "value",
-                "home_win_odds", "draw_odds", "away_win_odds",
-                "pre_o15", "pre_o25", "pre_o35",
-                "track_minute", "signal_minute", "total_shots", "total_sot", "total_corners",
-                "home_shots", "away_shots", "home_sot", "away_sot", "home_corners", "away_corners",
-                "home_accuracy", "away_accuracy", "delta_shots", "goals_at_signal"
-            ])
-            if not file_exists: writer.writeheader()
+            writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
+            if not file_exists: 
+                writer.writeheader()
             
             sig = data.get("signal_stats", {})
+            tags_list = data.get("signal_tags", [])
+            tags_str = ",".join(tags_list) if isinstance(tags_list, list) else str(tags_list)
+            
             writer.writerow({
                 "match": data.get("match") or data.get("teams"),
                 "result": data.get("result"),
                 "signal_tier": data.get("signal_tier"),
-                "signal_tags": ",".join(data.get("signal_tags", [])),
+                "signal_tags": tags_str,
                 "model_score": data.get("model_score"),
                 "book_odds": data.get("book_odds"),
                 "fair_odds": data.get("fair_odds"),
@@ -277,9 +283,9 @@ def save_result_to_csv(data):
                 "home_win_odds": data.get("home_win_odds"),
                 "draw_odds": data.get("draw_odds"),
                 "away_win_odds": data.get("away_win_odds"),
-                "pre_o15": data.get("prematch_over_1_5"),
-                "pre_o25": data.get("prematch_over_2_5"),
-                "pre_o35": data.get("prematch_over_3_5"),
+                "pre_o15": data.get("prematch_over_1_5") or data.get("pre_o15"),
+                "pre_o25": data.get("prematch_over_2_5") or data.get("pre_o25"),
+                "pre_o35": data.get("prematch_over_3_5") or data.get("pre_o35"),
                 "track_minute": data.get("track_minute"),
                 "signal_minute": data.get("signal_minute"),
                 "total_shots": sig.get("shots"),
@@ -293,7 +299,7 @@ def save_result_to_csv(data):
                 "away_corners": sig.get("away_corners"),
                 "home_accuracy": sig.get("home_accuracy"),
                 "away_accuracy": sig.get("away_accuracy"),
-                "delta_shots": data.get("delta", {}).get("shots"),
+                "delta_shots": data.get("delta", {}).get("shots") if isinstance(data.get("delta"), dict) else None,
                 "goals_at_signal": data.get("goals_at_signal")
             })
     except Exception as e:
@@ -306,20 +312,15 @@ def check_finished_matches():
     logging.info("📊 Checking results...")
     for match_id, data in list(seen_matches.items()):
         try:
-            # --- FIX: Convert string back to datetime object safely ---
             match_time = data["time"]
             if isinstance(match_time, str):
                 try:
-                    # Tries standard ISO string conversion
                     match_time = datetime.fromisoformat(match_time)
                 except ValueError:
-                    # Fallback for custom string formats if needed
                     match_time = datetime.strptime(match_time, "%Y-%m-%d %H:%M:%S.%f")
 
-            # Safe subtraction using the converted object
             if (datetime.now() - match_time).total_seconds() < 2400: 
                 continue
-            # ----------------------------------------------------------
             
             r = requests.get(f"{BASE_URL}/fixtures?id={match_id}", headers=HEADERS)
             res = r.json().get("response", [])
@@ -346,17 +347,19 @@ def check_finished_matches():
 
             result_data = data.copy()
             result_data["result"] = result
+            result_data["h_final"] = h_final
+            result_data["a_final"] = a_final
             save_result_to_csv(result_data)
             
             send_telegram(
-                f"📊 RESULT: {data['teams']}\n"
+                f"📊 RESULT: {data.get('teams') or data.get('match')}\n"
                 f"Outcome: {result}\n"
                 f"Score at Signal: {data['initial_score']}\n"
                 f"Final Score: {h_final}-{a_final}\n"
                 f"Goals after Signal: {goals_since_signal}"
             )
             
-            logging.info(f"📊 RESULT → {data['teams']} | {result}")
+            logging.info(f"📊 RESULT → {data.get('teams') or data.get('match')} | {result}")
             del seen_matches[match_id]
             save_signals()
         except Exception as e:
@@ -417,24 +420,23 @@ def run():
 
             for m in matches[:80]:
                 try:
-                    # Defensive Check: ensure necessary parent keys exist and are not None
                     if not m or not m.get("fixture") or not m.get("teams"):
                         continue
                         
                     fixture, teams = m["fixture"], m["teams"]
-                    goals = m.get("goals") or {}  # Fallback to empty dict if None
+                    goals = m.get("goals") or {}
                     
                     match_id, minute = str(fixture["id"]), fixture["status"]["elapsed"]
                     if not minute or minute < 30 or minute > 70: continue
 
                     home, away = teams["home"]["name"], teams["away"]["name"]
                     
-                    # Safe extraction even if goals is None or values are missing
                     h_goals = goals.get("home") if goals.get("home") is not None else 0
                     a_goals = goals.get("away") if goals.get("away") is not None else 0
                     
                     total = h_goals + a_goals
-                    if total >= 3: continue
+                    if total > 1: 
+                        continue
 
                     stats = get_stats(match_id)
                     if stats is None: continue
@@ -466,7 +468,18 @@ def run():
                             del tracked_matches[match_id]; continue
 
                         if stats["shots"] <= first["track_stats"]["shots"]: continue
-                        if stats["corners"] < 4: continue
+                        
+                        # Optimization Filter 1: SOT Delta Floor Check
+                        delta_sot = stats["sot"] - first["track_stats"]["sot"]
+                        if delta_sot < 1:
+                            logging.info(f"⛔ FILTERED → {home} vs {away} | Reason: Lazy Shooting (Zero New SOT)")
+                            del tracked_matches[match_id]; continue
+                            
+                        # Optimization Filter 2: Stale Attack Corner Cap
+                        delta_corners = stats["corners"] - first["track_stats"]["corners"]
+                        if delta_corners == 0 and stats["shots"] - first["track_stats"]["shots"] < 3:
+                            logging.info(f"⛔ FILTERED → {home} vs {away} | Reason: Stale Attacking Flow")
+                            del tracked_matches[match_id]; continue
 
                         score = 40
                         if h_goals == a_goals: score += 20
@@ -512,10 +525,9 @@ def run():
                             del tracked_matches[match_id]
                             save_tracked(); save_signals()
 
-                except Exception as e:
-                    logging.error(f"Match logic error: {e}")
+                except Exception as m_err:
+                    logging.error(f"Match logic error: {m_err}")
 
-            # Check Results every 30 mins
             if time.time() - last_result_check > 1800:
                 check_finished_matches()
                 last_result_check = time.time()
