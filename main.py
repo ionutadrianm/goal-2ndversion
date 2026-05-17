@@ -63,9 +63,16 @@ def load_signals():
         if os.path.exists(SIGNALS_FILE):
             with open(SIGNALS_FILE, "r") as f:
                 data = json.load(f)
+                cleaned_data = {}
                 for k, v in data.items():
-                    v["time"] = datetime.fromisoformat(v["time"])
-                seen_matches = data
+                    try:
+                        # Ensure time is parsed back into a real datetime object
+                        if isinstance(v.get("time"), str):
+                            v["time"] = datetime.fromisoformat(v["time"])
+                        cleaned_data[str(k)] = v
+                    except Exception as parse_err:
+                        logging.error(f"Error parsing match {k}: {parse_err}")
+                seen_matches = cleaned_data
                 logging.info(f"📂 Loaded {len(seen_matches)} active signals")
     except Exception as e:
         logging.error(f"Load signals error: {e}")
@@ -93,9 +100,11 @@ def load_tracked():
 def send_telegram(msg):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+        r = requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+        if r.status_code != 200:
+            logging.error(f"Telegram API response error: {r.text}")
     except Exception as e:
-        logging.error(f"Telegram error: {e}")
+        logging.error(f"Telegram connection error: {e}")
 
 # =========================
 # API HELPERS
@@ -184,22 +193,16 @@ def get_prematch_odds(fixture_id):
 # HARD FILTERS (QUALITY CONTROL)
 # =========================
 def is_high_quality_signal(stats, prematch):
-    """
-    Eliminate low probability matches before they become signals.
-    """
-    # 1. THE GHOST FILTER: One team isn't even playing
     if (stats['home_sot'] == 0 and stats['home_corners'] == 0) or \
        (stats['away_sot'] == 0 and stats['away_corners'] == 0):
         return False, "Ghost Team"
 
-    # 2. SPRAY AND PRAY: High volume but zero accuracy
     for side in ['home', 'away']:
         shots = stats[f"{side}_shots"]
         sot = stats[f"{side}_sot"]
         if shots >= 7 and sot <= 1:
             return False, f"Spray & Pray ({side})"
 
-    # 3. BROKEN FAVORITE: Heavy favorite being dominated by underdog SOT
     home_odds = prematch.get("home_win_odds") or 2.0
     away_odds = prematch.get("away_win_odds") or 2.0
     if home_odds <= 1.40 and stats['away_sot'] > stats['home_sot']:
@@ -248,7 +251,7 @@ def calculate_value(book_odds, fair_odds):
 def save_result_to_csv(data):
     try:
         file_exists = os.path.isfile(RESULTS_CSV)
-        with open(RESULTS_CSV, "a", newline="") as f:
+        with open(RESULTS_CSV, "a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=[
                 "match", "result", "signal_tier", "signal_tags", "model_score",
                 "book_odds", "fair_odds", "model_prob", "value",
@@ -329,7 +332,6 @@ def check_finished_matches():
             result_data["result"] = result
             save_result_to_csv(result_data)
             
-            # --- NEW: SEND INDIVIDUAL RESULT TO TELEGRAM ---
             send_telegram(
                 f"📊 RESULT: {data['teams']}\n"
                 f"Outcome: {result}\n"
@@ -342,20 +344,22 @@ def check_finished_matches():
             del seen_matches[match_id]
             save_signals()
         except Exception as e:
-            logging.error(f"Result error: {e}")
+            logging.error(f"Individual result process error for match {match_id}: {e}")
 
-    # --- NEW: GENERATE & SEND OVERALL PERFORMANCE REPORT ---
+    # Moved outside the main match loop's try block to ensure it always fires
     generate_performance_report()
 
 def generate_performance_report():
     try:
-        if not os.path.exists(RESULTS_CSV): return
+        if not os.path.exists(RESULTS_CSV): 
+            logging.warning("Performance report skipped: results file does not exist yet.")
+            return
         
         wins = 0
         draws = 0
         losses = 0
         total = 0
-        with open(RESULTS_CSV, "r") as f:
+        with open(RESULTS_CSV, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
                 total += 1
@@ -367,9 +371,6 @@ def generate_performance_report():
                     losses += 1
         
         if total > 0:
-            winrate = round((wins / total) * 100, 2)
-            # Winrate usually excludes draws or treats them as neutral
-            # This calculates winrate based on completed (non-refunded) bets
             active_bets = total - draws
             clean_winrate = round((wins / active_bets) * 100, 2) if active_bets > 0 else 0
 
@@ -383,9 +384,9 @@ def generate_performance_report():
                 f"📈 Adj. Winrate: {clean_winrate}%"
             )
             send_telegram(report_msg)
-            logging.info(f"Sent Performance Report: {winrate}%")
+            logging.info(f"Sent Performance Report. Total tracked games in CSV: {total}")
     except Exception as e:
-        logging.error(f"Error generating report: {e}")
+        logging.error(f"Error generating performance report: {e}")
 
 # =========================
 # MAIN LOOP
@@ -402,7 +403,7 @@ def run():
             for m in matches[:80]:
                 try:
                     fixture, teams, goals = m["fixture"], m["teams"], m["goals"]
-                    match_id, minute = fixture["id"], fixture["status"]["elapsed"]
+                    match_id, minute = str(fixture["id"]), fixture["status"]["elapsed"]
                     if not minute or minute < 30 or minute > 70: continue
 
                     home, away = teams["home"]["name"], teams["away"]["name"]
@@ -434,17 +435,14 @@ def run():
                     if 50 <= minute <= 65 and match_id in tracked_matches and match_id not in seen_matches:
                         first = tracked_matches[match_id]
                         
-                        # Apply Hard Filters (Quality Control)
                         is_valid, reason = is_high_quality_signal(stats, first)
                         if not is_valid:
                             logging.info(f"⛔ FILTERED → {home} vs {away} | Reason: {reason}")
                             del tracked_matches[match_id]; continue
 
-                        # Basic Momentum Check
                         if stats["shots"] <= first["track_stats"]["shots"]: continue
                         if stats["corners"] < 4: continue
 
-                        # Scoring logic (Unchanged as requested)
                         score = 40
                         if h_goals == a_goals: score += 20
                         if stats["shots"] >= 12: score += 15
@@ -457,7 +455,6 @@ def run():
                         
                         tier = classify(score)
                         
-                        # Tagging Archetypes
                         tags = []
                         h_p = stats["home_shots"] + (stats["home_sot"]*2) + stats["home_corners"]
                         a_p = stats["away_shots"] + (stats["away_sot"]*2) + stats["away_corners"]
@@ -470,7 +467,6 @@ def run():
                         elif h_pct <= 30: tags.append("AWAY_SIEGE")
                         if stats["home_sot"] >= 2 and stats["away_sot"] >= 2: tags.append("END_TO_END")
 
-                        # Odds & Value
                         odds_data = get_odds(match_id)
                         book_odds = get_target_odds(odds_data, total)
                         delta_dict = {"shots": delta_s}
