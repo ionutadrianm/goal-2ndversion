@@ -458,8 +458,8 @@ def run():
                         save_tracked()
                         logging.info(f"🧠 TRACKED → {home} vs {away} | Fav: {favorite}")
 
-                    # CONFIRMATION (50-65 min)
-                    if 50 <= minute <= 65 and match_id in tracked_matches and match_id not in seen_matches:
+                    # CONFIRMATION (46-58 min)
+                    if 46 <= minute <= 58 and match_id in tracked_matches and match_id not in seen_matches:
                         first = tracked_matches[match_id]
                         
                         is_valid, reason = is_high_quality_signal(stats, first)
@@ -481,6 +481,13 @@ def run():
                             logging.info(f"⛔ FILTERED → {home} vs {away} | Reason: Stale Attacking Flow")
                             del tracked_matches[match_id]; continue
 
+                        # 1. Calculate pressure metrics first so they can influence the score
+                        h_p = stats["home_shots"] + (stats["home_sot"]*2) + stats["home_corners"]
+                        a_p = stats["away_shots"] + (stats["away_sot"]*2) + stats["away_corners"]
+                        total_p = h_p + a_p
+                        h_pct = (h_p / total_p * 100) if total_p > 0 else 50
+
+                        # 2. Base model scoring calculations
                         score = 40
                         if h_goals == a_goals: score += 20
                         if stats["shots"] >= 12: score += 15
@@ -491,13 +498,14 @@ def run():
                         if delta_s >= 5: score += 15
                         elif delta_s >= 3: score += 8
                         
+                        # 3. Enforce the Siege Factor bonus (+15 points for one-sided dominant pressure)
+                        if h_pct >= 70 or h_pct <= 30:
+                            score += 15
+                        
+                        # 4. Classify tier based on final optimized score
                         tier = classify(score)
                         
                         tags = []
-                        h_p = stats["home_shots"] + (stats["home_sot"]*2) + stats["home_corners"]
-                        a_p = stats["away_shots"] + (stats["away_sot"]*2) + stats["away_corners"]
-                        total_p = h_p + a_p
-                        h_pct = (h_p / total_p * 100) if total_p > 0 else 50
                         
                         if first["favorite"] == "HOME" and h_goals <= a_goals: tags.append("WOUNDED_FAV")
                         elif first["favorite"] == "AWAY" and a_goals <= h_goals: tags.append("WOUNDED_FAV")
@@ -512,7 +520,7 @@ def run():
                         fair_odds = prob_to_odds(prob)
                         value = calculate_value(book_odds, fair_odds) if book_odds else None
 
-                        if value and value >= 2:
+                        if value and (2 <= value <= 85):
                             send_telegram(f"{tier} SIGNAL\n{home} vs {away}\nMin: {minute}\nScore: {h_goals}-{a_goals}\nMarket: Asian Over 1.0 (Post-Signal)\nBook: {book_odds}\nFair: {fair_odds}\nValue: {value}%\nTags: {', '.join(tags)}")
                             
                             seen_matches[match_id] = {
