@@ -365,7 +365,7 @@ def check_finished_matches():
         except Exception as e:
             logging.error(f"Result error for match {match_id}: {e}")
 
-    generate_performance_report()
+    # generate_performance_report()
 
 def generate_performance_report():
     try:
